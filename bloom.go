@@ -23,12 +23,14 @@ func (f *Filter) Blocks() int {
 	return len(f.blocks)
 }
 
-func (f *Filter) Clear(cnt int) {
+func (f *Filter) Expire(cnt int) {
 	if cnt > 0 && cnt < len(f.blocks) {
 		f.blocks = f.blocks[cnt:]
-		return
+	} else {
+		f.blocks = []*bitmap{newBitmap()}
 	}
-	f.blocks = []*bitmap{f.blocks[len(f.blocks)-1]}
+	f.blkidx = len(f.blocks) - 1
+	return
 }
 
 func (f *Filter) Items() int {
