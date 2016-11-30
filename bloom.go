@@ -1,24 +1,54 @@
 package bloom
 
 import (
-	"crypto/sha1"
+	"hash"
+	"hash/crc64"
 	. "math"
 )
 
 type Filter struct {
 	blocks []*bitmap
-	fpRate float64
+	blkcap int
+	blkidx int
 }
 
 func NewFilter(falsePositive float64) *Filter {
-	f := Filter{fpRate: falsePositive}
+	f := Filter{}
 	f.blocks = append(f.blocks, newBitmap())
+	f.blkcap = int(256 * Log(0.6185) / Log(falsePositive))
 	return &f
 }
 
+func (f *Filter) Blocks() int {
+	return len(f.blocks)
+}
+
+func (f *Filter) Clear(cnt int) {
+	if cnt > 0 && cnt < len(f.blocks) {
+		f.blocks = f.blocks[cnt:]
+		return
+	}
+	f.blocks = []*bitmap{f.blocks[len(f.blocks)-1]}
+}
+
+func (f *Filter) Items() int {
+	idx := len(f.blocks) - 1
+	return idx*f.blkcap + f.blocks[idx].cnt
+}
+
+func (f *Filter) FalsePositive() float64 {
+	f0 := f.blocks[0].falsePositive()
+	n := float64(len(f.blocks))
+	if n > 1 {
+		return ((n-1)*f0 + f.blocks[len(f.blocks)-1].falsePositive()) / n
+	}
+	return f0
+}
+
 func (f *Filter) Contains(item []byte) bool {
+	sum := f.blocks[0].checksum(item)
 	for _, b := range f.blocks {
-		if b.contains(item) {
+		if b.contains(sum) {
 			return true
 		}
 	}
@@ -26,77 +56,58 @@ func (f *Filter) Contains(item []byte) bool {
 }
 
 func (f *Filter) Add(item []byte) bool {
-	exists := f.Contains(item)
-	if exists {
-		return true
-	}
-	added := false
+	sum := f.blocks[0].checksum(item)
 	for _, b := range f.blocks {
-		if b.falsePositive() >= f.fpRate {
-			continue
+		if b.contains(sum) {
+			return true
 		}
-		b.add(item)
-		added = true
 	}
-	if !added {
-		newb := newBitmap()
-		newb.add(item)
-		f.blocks = append(f.blocks, newb)
+	if f.blocks[f.blkidx].cnt >= f.blkcap {
+		f.blkidx++
+		if f.blkidx >= len(f.blocks) {
+			f.blocks = append(f.blocks, newBitmap())
+		}
 	}
+	f.blocks[f.blkidx].add(sum)
+	f.blocks[f.blkidx].cnt++
 	return false
-}
-
-func (f *Filter) Blocks() int {
-	return len(f.blocks)
 }
 
 type bitmap struct {
 	buf []byte
+	h   hash.Hash
 	cnt int
 }
 
 func newBitmap() *bitmap {
-	return &bitmap{buf: make([]byte, 8192)}
-}
-
-func (b *bitmap) capacity(falsePositive float64) int {
-	return int(65536 * Log(0.6185) / Log(falsePositive))
+	return &bitmap{
+		buf: make([]byte, 32),
+		h:   crc64.New(crc64.MakeTable(crc64.ECMA)),
+	}
 }
 
 func (b *bitmap) falsePositive() float64 {
-	return Pow(1-Exp(-10*float64(b.cnt)/65536), 10)
+	return Pow(1-Exp(-8*float64(b.cnt)/256), 8)
 }
 
-func (b *bitmap) clear() {
-	b.buf = make([]byte, 8192)
-	b.cnt = 0
+func (b *bitmap) checksum(item []byte) []byte {
+	b.h.Reset()
+	return b.h.Sum(item)
 }
 
-func (b *bitmap) hash(item []byte) (idx [10]uint16) {
-	sum := sha1.Sum(item)
-	for i := 0; i < 10; i++ {
-		idx[i] = uint16(sum[i*2])<<8 + uint16(sum[i*2+1])
-	}
-	return
-}
-
-func (b *bitmap) contains(item []byte) bool {
-	for _, h := range b.hash(item) {
-		if b.buf[h/8]&(1<<(h%8)) == 0 {
+func (b *bitmap) contains(checksum []byte) bool {
+	for _, s := range checksum {
+		if b.buf[s/8]&(1<<(s%8)) == 0 {
 			return false
 		}
 	}
 	return true
 }
 
-func (b *bitmap) add(item []byte) bool {
-	exists := b.contains(item)
-	if exists {
-		return true
-	}
-	for _, h := range b.hash(item) {
-		b.buf[h/8] = b.buf[h/8] | (1 << (h % 8))
+func (b *bitmap) add(checksum []byte) int {
+	for _, s := range checksum {
+		b.buf[s/8] = b.buf[s/8] | (1 << (s % 8))
 	}
 	b.cnt++
-	return false
+	return b.cnt
 }
