@@ -21,9 +21,13 @@ type Filter struct {
 func NewFilter(capacity int, falsePositive float64) *Filter {
 	entropy := math.Log(falsePositive) / math.Log(0.6185)
 	size := float64(capacity) * entropy / 8
+	blkcnt := int(size/BUF_SIZE + 0.5)
+	if blkcnt == 0 {
+		blkcnt = 1
+	}
 	hc := int(-math.Log(falsePositive)/math.Log(2) + 0.5)
 	return &Filter{
-		buffers:   make([]bitmap, int(size/BUF_SIZE+0.5)),
+		buffers:   make([]bitmap, blkcnt),
 		hashCount: hc,
 		tbl:       crc64.MakeTable(crc64.ECMA),
 	}
